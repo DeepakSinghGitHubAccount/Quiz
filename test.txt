@@ -1,0 +1,19 @@
+SELECT ccev_store.entity_id, ccev_default.value AS default_value, ccev_store.value AS store_value, name_attr.value AS category_name
+FROM catalog_category_entity AS cce
+JOIN catalog_category_entity_varchar AS ccev_store
+    ON cce.entity_id = ccev_store.entity_id
+JOIN catalog_category_entity_varchar AS ccev_default 
+    ON ccev_store.entity_id = ccev_default.entity_id
+    AND ccev_default.store_id = 0
+JOIN eav_attribute AS ea 
+    ON ea.attribute_id = ccev_store.attribute_id
+JOIN catalog_category_entity_varchar AS name_attr
+    ON ccev_store.entity_id = name_attr.entity_id
+JOIN eav_attribute AS ea_name
+    ON ea_name.attribute_id = name_attr.attribute_id
+WHERE cce.parent_id = PARENT_CATEGORY_ID  -- Replace with the actual parent category ID
+  AND ea.attribute_code = 'image'
+  AND ccev_store.store_id = X  -- Replace X with the actual store ID
+  AND (ccev_store.value = ccev_default.value OR ccev_store.value IS NULL)
+  AND ea_name.attribute_code = 'name'
+  AND name_attr.store_id = 0;  -- Fetching the category name from the default store (store_id = 0)
