@@ -1,0 +1,125 @@
+<?php
+
+ini_set('memory_limit', '1024M');
+require_once('app/Mage.php');
+umask(0);
+Mage::app();
+
+// Woohoo Pay API endpoints
+$woohooPayBaseURL = 'https://woohoopay.example.com/api';
+$createEndpoint = $woohooPayBaseURL . '/payment-options/create';
+$updateEndpoint = $woohooPayBaseURL . '/payment-options/update';
+
+// Function to call Woohoo Pay API
+function callWoohooPayAPI($url, $payload, $method = 'POST') {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Accept: application/json'
+    ]);
+    $response = curl_exec($ch);
+    if (curl_errno($ch)) {
+        throw new Exception('cURL Error: ' . curl_error($ch));
+    }
+    curl_close($ch);
+    return json_decode($response, true);
+}
+
+// Function to fetch payment configuration from core_config_data
+function getPaymentConfig($scope, $scopeId = 0) {
+    $configData = Mage::getModel('core/config_data')
+        ->getCollection()
+        ->addFieldToFilter('path', ['like' => 'payment/%'])
+        ->addFieldToFilter('scope', $scope)
+        ->addFieldToFilter('scope_id', $scopeId);
+
+    $paymentConfigs = [];
+    foreach ($configData as $config) {
+        $path = $config->getPath();
+        $value = $config->getValue();
+        $paymentConfigs[$path] = $value;
+    }
+    return $paymentConfigs;
+}
+
+// Function to migrate payment configuration to Woohoo Pay
+function migratePaymentConfig($level, $scopeId = null) {
+    global $createEndpoint, $updateEndpoint;
+
+    $configs = getPaymentConfig($level, $scopeId);
+
+    foreach ($configs as $path => $value) {
+        // Extract payment method code from the path
+        $pathParts = explode('/', $path);
+        $paymentMethodCode = $pathParts[1];
+        $configKey = $pathParts[2];
+
+        // Build payload for Woohoo Pay
+        $paymentData = [
+            'method_code' => $paymentMethodCode,
+            'config_key' => $configKey,
+            'value' => $value,
+            'level' => $level, // default, website, or store
+        ];
+
+        if ($level === 'website') {
+            $paymentData['website_id'] = $scopeId;
+        } elseif ($level === 'store') {
+            $paymentData['store_id'] = $scopeId;
+        }
+
+        try {
+            // Check if the payment configuration exists in Woohoo Pay
+            $existingPayment = callWoohooPayAPI($updateEndpoint, $paymentData, 'POST');
+
+            if ($existingPayment['status'] === 'exists') {
+                // Update payment configuration
+                $updateResponse = callWoohooPayAPI($updateEndpoint, $paymentData, 'PUT');
+                echo "Updated $level payment configuration: {$path}\n";
+            } else {
+                // Create payment configuration
+                $createResponse = callWoohooPayAPI($createEndpoint, $paymentData, 'POST');
+                echo "Created $level payment configuration: {$path}\n";
+            }
+        } catch (Exception $e) {
+            Mage::logException($e);
+            echo "Exception for $level payment configuration {$path}: " . $e->getMessage() . PHP_EOL;
+        }
+    }
+}
+
+try {
+    // Step 1: Default-level migration
+    echo "Migrating default-level payment configurations...\n";
+    migratePaymentConfig('default');
+
+    // Step 2: Website-level migration
+    echo "Checking and migrating website-level overrides...\n";
+    $websites = Mage::app()->getWebsites();
+    foreach ($websites as $website) {
+        $websiteId = $website->getId();
+        $websiteConfigs = getPaymentConfig('websites', $websiteId);
+        if (!empty($websiteConfigs)) {
+            echo "Migrating website-level payment configurations for Website ID: {$websiteId}...\n";
+            migratePaymentConfig('websites', $websiteId);
+        }
+    }
+
+    // Step 3: Store-level migration
+    echo "Checking and migrating store-level overrides...\n";
+    $stores = Mage::app()->getStores();
+    foreach ($stores as $store) {
+        $storeId = $store->getId();
+        $storeConfigs = getPaymentConfig('stores', $storeId);
+        if (!empty($storeConfigs)) {
+            echo "Migrating store-level payment configurations for Store ID: {$storeId}...\n";
+            migratePaymentConfig('stores', $storeId);
+        }
+    }
+} catch (Exception $e) {
+    Mage::logException($e);
+    echo "Migration failed: " . $e->getMessage() . PHP_EOL;
+}
